@@ -75,39 +75,69 @@ function generateSheet() {
   resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// Analyse le cours en plusieurs blocs pour conserver la relation « consigne → liste de réponses ».
+// Analyse le cours en conservant les titres, les listes et surtout la relation « consigne → réponses ».
 function parseCourse(text) {
   const rawLines = text.split(/\r?\n/);
   const lines = rawLines.map(clean).filter(Boolean);
-  const sentences = splitSentences(text).map(clean).filter(Boolean);
-  const bullets = lines.filter(isBullet).map(stripBullet);
+  const sentences = extractSentences(rawLines);
+  const bullets = rawLines.filter(isBullet).map(line => clean(line.replace(/^\s*(?:[-•*▪]|\d+[.)])\s+/, ''))).filter(Boolean);
   const definitions = extractDefinitions(lines);
-  const headings = lines.filter(isHeading);
+  const headings = extractHeadings(rawLines);
   const questionGroups = extractQuestionGroups(rawLines);
   return { lines, sentences, bullets, definitions, headings, questionGroups };
 }
 
 function clean(value) {
   return value
-    .replace(/^\s*[-•*▪]\s*/, '')
-    .replace(/^\s*\d+[.)]\s*/, '')
+    .replace(/^\s*\*\*(.*?)\*\*\s*$/, '$1')
+    .replace(/^\s*__([^_]+)__\s*$/, '$1')
     .replace(/^\s*#+\s*/, '')
+    .replace(/^\s*[-•▪]\s*/, '')
+    .replace(/^\s*\d+[.)]\s*/, '')
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function stripBullet(value) { return clean(value); }
-function isBullet(line) { return /^\s*(?:[-•*▪]|\d+[.)])\s+/.test(line); }
-function isHeading(line) {
-  return line.length <= 90 && (/^#{1,4}\s/.test(line) || (line.endsWith(':') && line.split(/\s+/).length <= 14));
+function isBullet(line) {
+  return /^\s*(?:[-•*▪]|\d+[.)])\s+/.test(line);
 }
 
-function splitSentences(text) {
-  return text.replace(/\n/g, ' ').split(/(?<=[.!?])\s+/);
+function extractHeadings(rawLines) {
+  return rawLines.map(line => {
+    const trimmed = line.trim();
+    const withoutMarkdown = trimmed.replace(/^\s*#{1,4}\s*/, '').replace(/^\s*\*\*(.*?)\*\*\s*$/, '$1');
+    const withoutNumber = withoutMarkdown.replace(/^\s*\d+[.)]\s*/, '').trim();
+    return { raw: trimmed, value: withoutNumber };
+  }).filter(item => isHeading(item.raw, item.value)).map(item => item.value);
+}
+
+function isHeading(rawLine, cleanedLine = clean(rawLine)) {
+  const raw = rawLine.trim();
+  const markdownHeading = /^#{1,4}\s/.test(raw);
+  const numberedHeading = /^\d+[.)]\s+/.test(raw) && !isBullet(raw);
+  const boldHeading = /^\*\*[^*]+\*\*$/.test(raw);
+  const colonHeading = cleanedLine.endsWith(':') && cleanedLine.split(/\s+/).length <= 14;
+  const questionHeading = cleanedLine.endsWith('?') && cleanedLine.split(/\s+/).length <= 12;
+  return markdownHeading || numberedHeading || boldHeading || colonHeading || questionHeading;
+}
+
+function extractSentences(rawLines) {
+  const contentLines = rawLines
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !isBullet(line))
+    .filter(line => !isHeading(line));
+
+  return contentLines
+    .flatMap(line => line.replace(/\*\*/g, '').split(/(?<=[.!?])\s+/))
+    .map(clean)
+    .filter(sentence => sentence.length > 25);
 }
 
 function extractDefinitions(lines) {
-  return lines.filter(line => line.includes(':') && !isListIntro(line)).slice(0, 10).map(line => {
+  return lines.filter(line => line.includes(':') && !isListIntro(line) && !isHeading(line)).slice(0, 10).map(line => {
     const index = line.indexOf(':');
     return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
   }).filter(pair => pair[0] && pair[1]);
@@ -118,13 +148,11 @@ function extractDefinitions(lines) {
 // - réponse 1
 // - réponse 2
 // - réponse 3
-// Même si une ligne vide ou un sous-titre apparaît entre deux blocs.
 function extractQuestionGroups(rawLines) {
   const groups = [];
   let current = null;
 
-  for (let i = 0; i < rawLines.length; i++) {
-    const raw = rawLines[i];
+  for (const raw of rawLines) {
     const line = raw.replace(/^\s*#+\s*/, '').trim();
     if (!line) continue;
 
@@ -134,15 +162,15 @@ function extractQuestionGroups(rawLines) {
       continue;
     }
 
-    // Si on arrive à une nouvelle ligne de texte, le groupe précédent est terminé.
     if (current && current.answers.length) {
       groups.push(current);
       current = null;
     }
 
-    if (isListIntro(line)) {
+    const normalized = clean(line);
+    if (isListIntro(normalized)) {
       current = {
-        question: makeListQuestion(line),
+        question: makeListQuestion(normalized),
         answers: []
       };
     }
@@ -152,16 +180,13 @@ function extractQuestionGroups(rawLines) {
 
   return groups
     .filter(group => group.answers.length > 0)
-    .map(group => ({
-      question: group.question,
-      answers: unique(group.answers)
-    }))
+    .map(group => ({ question: group.question, answers: unique(group.answers) }))
     .filter(group => group.answers.length > 0)
     .slice(0, 12);
 }
 
 function isListIntro(line) {
-  const value = line.replace(/\s+/g, ' ').trim();
+  const value = clean(line);
   if (!value.endsWith(':')) return false;
   if (value.length < 12 || value.length > 110) return false;
   if (value.split(/\s+/).length > 18) return false;
@@ -183,11 +208,12 @@ function makeListQuestion(line) {
   const lower = heading.toLowerCase();
 
   if (/\bpermet(?:tent)? de$/i.test(lower)) {
-    return `Pourquoi ${heading.charAt(0).toLowerCase()}${heading.slice(1).replace(/\bpermet(?:tent)? de$/i, '').trim()} ?`.replace(/\?$/, '?');
+    const subject = heading.replace(/\bpermet(?:tent)? de$/i, '').trim();
+    return `Quels sont les objectifs de ${subject.toLowerCase()} ?`;
   }
 
-  if (/\bcomprend(?:ent)?$/i.test(lower)) return `${heading} quoi ?`;
-  if (/\bdistingue(?:nt)?$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\bcomprend(?:ent)?$/i.test(lower)) return `Que comprend ${heading.replace(/\bcomprend(?:ent)?$/i, '').trim()} ?`;
+  if (/\bdistingue(?:nt)?$/i.test(lower)) return `Quelles sont les différentes formes de ${heading.replace(/\bdistingue(?:nt)?$/i, '').trim()} ?`;
   if (/\b(?:types?|étapes?|raisons?|objectifs?|moyens?|règles?|critères?|signes?|exemples?|causes?|conséquences?|indications?|contre-indications?)$/i.test(lower)) {
     return `${heading} ?`;
   }
@@ -203,8 +229,6 @@ function makeFallbackQA(items, sentences) {
 }
 
 function pickImportant(lines, sentences, headings, bullets, questionGroups) {
-  // Les réponses de listes passent en priorité : elles contiennent souvent les notions
-  // que l'utilisateur doit réellement mémoriser.
   const groupedAnswers = questionGroups.flatMap(group => group.answers);
   const candidates = [...groupedAnswers, ...bullets, ...headings.map(h => h.replace(/:$/, '')), ...sentences];
   const seen = new Set();
