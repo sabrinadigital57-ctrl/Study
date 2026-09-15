@@ -87,7 +87,7 @@ function parseCourse(text) {
 
 function normalizeCourse(text) {
   let value = text.replace(/\r/g, '');
-  value = value.replace(/\*\*\s*([^*\n]+?)\s*\*\*/g, '\n@@BOLD@@$1@@END@@\n');
+  value = value.replace(/\*\*\s*([^*\n]+?)\s*\*\*/g, '$1');
   value = value.replace(/\s+(?=(?:\d+[.)])\s+[A-ZÀ-ÖØ-Ý])/g, '\n');
   value = value.replace(/\s+(?=###?\s+)/g, '\n');
   value = value.replace(/\s+(?=[-•▪]\s+)/g, '\n');
@@ -220,7 +220,7 @@ function extractQuestionGroups(lines) {
   return groups
     .map(group => ({ question: group.question, answers: unique(group.answers) }))
     .filter(group => group.answers.length)
-    .slice(0, 12);
+    .slice(0, 30);
 }
 
 function looksLikeListItem(line) {
@@ -229,7 +229,7 @@ function looksLikeListItem(line) {
 
 function looksLikeContinuationItem(line) {
   const value = clean(line);
-  return /;$/.test(value) && value.length <= 140;
+  return /[.;]$/.test(value) && value.length <= 180;
 }
 
 function makeHeadingQuestion(heading) {
@@ -237,6 +237,8 @@ function makeHeadingQuestion(heading) {
   if (/^les différents types d’hygiène des mains$/i.test(heading) || /^les différents types d\'hygiène des mains$/i.test(heading)) return 'Quels sont les différents types d’hygiène des mains ?';
   if (/^quand réaliser une hygiène des mains$/i.test(heading)) return 'Quand faut-il réaliser une hygiène des mains ?';
   if (/^pourquoi se laver les mains$/i.test(heading)) return 'Pourquoi faut-il se laver les mains ?';
+  if (/^définition$/i.test(heading)) return 'Qu’est-ce que le lavage des mains ?';
+  if (/^à retenir$/i.test(heading)) return 'Que faut-il retenir sur l’hygiène des mains ?';
   return `${heading} ?`;
 }
 
