@@ -85,32 +85,14 @@ function parseCourse(text) {
   return { lines: normalizedLines, sentences, bullets, definitions, headings, questionGroups };
 }
 
-// Les copier-coller depuis Word, Canva ou PDF peuvent supprimer les retours à la ligne.
-// On reconstruit donc une structure minimale à partir des titres en gras/numérotés,
-// des puces et des listes séparées par des « ; ».
 function normalizeCourse(text) {
   let value = text.replace(/\r/g, '');
-
-  // Un titre Markdown en gras devient une ligne autonome.
   value = value.replace(/\*\*\s*([^*\n]+?)\s*\*\*/g, '\n@@BOLD@@$1@@END@@\n');
-
-  // Titres numérotés collés au texte : 1. Titre, 2. Titre, etc.
   value = value.replace(/\s+(?=(?:\d+[.)])\s+[A-ZÀ-ÖØ-Ý])/g, '\n');
-
-  // Titres Markdown simples collés au texte.
   value = value.replace(/\s+(?=###?\s+)/g, '\n');
-
-  // Les listes « - ... ; - ... » deviennent de vraies lignes.
   value = value.replace(/\s+(?=[-•▪]\s+)/g, '\n');
-
-  // Certains copier-coller suppriment aussi les puces. On sépare alors
-  // les éléments d’une liste quand ils sont clairement séparés par « ; ».
   value = value.replace(/;\s+(?=[a-zà-ÿ])/g, ';\n');
-
-  return value
-    .split(/\n+/)
-    .map(line => line.trim())
-    .filter(Boolean);
+  return value.split(/\n+/).map(line => line.trim()).filter(Boolean);
 }
 
 function clean(value) {
@@ -128,24 +110,26 @@ function clean(value) {
     .trim();
 }
 
+function isNumberedHeading(line) {
+  const raw = line.trim();
+  if (!/^\d+[.)]\s+/.test(raw)) return false;
+  const value = clean(raw);
+  return /^(définition|pourquoi\b|les différents types\b|quand réaliser\b|les étapes\b|à retenir\b)/i.test(value);
+}
+
 function isBullet(line) {
-  return /^\s*(?:[-•*▪]|\d+[.)])\s+/.test(line);
+  const raw = line.trim();
+  if (isNumberedHeading(raw)) return false;
+  return /^\s*(?:[-•*▪]|\d+[.)])\s+/.test(raw);
 }
 
 function extractBullets(lines) {
-  return lines
-    .filter(isBullet)
-    .map(line => clean(line))
-    .filter(Boolean);
+  return lines.filter(isBullet).map(line => clean(line)).filter(Boolean);
 }
 
 function extractHeadings(lines) {
   return lines
-    .map(line => {
-      const raw = line.trim();
-      const value = clean(raw);
-      return { raw, value };
-    })
+    .map(line => ({ raw: line.trim(), value: clean(line) }))
     .filter(item => isHeading(item.raw, item.value))
     .map(item => item.value.replace(/:$/, '').trim())
     .filter(item => item && !/^cours test\b/i.test(item));
@@ -154,7 +138,7 @@ function extractHeadings(lines) {
 function isHeading(rawLine, cleanedLine = clean(rawLine)) {
   const raw = rawLine.trim();
   const markdownHeading = /^#{1,4}\s/.test(raw);
-  const numberedHeading = /^\d+[.)]\s+/.test(raw) && !isBullet(raw);
+  const numberedHeading = isNumberedHeading(raw);
   const boldHeading = /^@@BOLD@@/.test(raw) || /^\*\*[^*]+\*\*$/.test(raw);
   const colonHeading = cleanedLine.endsWith(':') && cleanedLine.split(/\s+/).length <= 14 && !isListIntro(cleanedLine);
   const questionHeading = cleanedLine.endsWith('?') && cleanedLine.split(/\s+/).length <= 12;
@@ -176,48 +160,59 @@ function extractSentences(lines) {
 
 function extractDefinitions(lines) {
   const definitions = [];
-
   for (const line of lines) {
     const value = clean(line);
-    if (!value.includes(':')) continue;
-    if (/^mots importants\s*:/i.test(value)) continue;
-
+    if (!value.includes(':') || /^mots importants\s*:/i.test(value)) continue;
     const index = value.indexOf(':');
     const term = value.slice(0, index).trim();
     const def = value.slice(index + 1).trim();
     if (!term || !def || term.split(/\s+/).length > 10) continue;
     if (isListIntro(value) || /^cours test\b/i.test(term)) continue;
-
-    // Une vraie définition peut être dans une puce : « - Le lavage simple : ... ».
-    // On la garde, mais on ignore les phrases de liste comme « objectifs : ... ».
     definitions.push([term, def]);
   }
-
   return uniquePairs(definitions).slice(0, 10);
 }
 
 function extractQuestionGroups(lines) {
   const groups = [];
   let current = null;
+  let pendingHeading = null;
 
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
 
-    if (isBullet(line)) {
-      if (current) current.answers.push(clean(line));
+    if (isHeading(line) && !isListIntro(clean(line))) {
+      if (current && current.answers.length) groups.push(current);
+      current = null;
+      pendingHeading = clean(line).replace(/:$/, '').trim();
       continue;
     }
 
-    if (current && current.answers.length) {
-      groups.push(current);
-      current = null;
+    if (isListIntro(line)) {
+      if (current && current.answers.length) groups.push(current);
+      current = { question: makeListQuestion(clean(line)), answers: [] };
+      pendingHeading = null;
+      continue;
     }
 
-    const normalized = clean(line);
-    if (isListIntro(normalized)) {
-      current = { question: makeListQuestion(normalized), answers: [] };
+    if (isBullet(line)) {
+      if (current) {
+        current.answers.push(clean(line));
+      } else if (pendingHeading && looksLikeListItem(line)) {
+        current = { question: makeHeadingQuestion(pendingHeading), answers: [clean(line)] };
+      }
+      continue;
     }
+
+    if (current && looksLikeContinuationItem(line)) {
+      current.answers.push(clean(line));
+      continue;
+    }
+
+    if (current && current.answers.length) groups.push(current);
+    current = null;
+    pendingHeading = null;
   }
 
   if (current && current.answers.length) groups.push(current);
@@ -228,11 +223,26 @@ function extractQuestionGroups(lines) {
     .slice(0, 12);
 }
 
+function looksLikeListItem(line) {
+  return isBullet(line) || /;$/.test(clean(line));
+}
+
+function looksLikeContinuationItem(line) {
+  const value = clean(line);
+  return /;$/.test(value) && value.length <= 140;
+}
+
+function makeHeadingQuestion(heading) {
+  if (/^les étapes du lavage simple$/i.test(heading)) return 'Quelles sont les étapes du lavage simple ?';
+  if (/^les différents types d’hygiène des mains$/i.test(heading) || /^les différents types d\'hygiène des mains$/i.test(heading)) return 'Quels sont les différents types d’hygiène des mains ?';
+  if (/^quand réaliser une hygiène des mains$/i.test(heading)) return 'Quand faut-il réaliser une hygiène des mains ?';
+  if (/^pourquoi se laver les mains$/i.test(heading)) return 'Pourquoi faut-il se laver les mains ?';
+  return `${heading} ?`;
+}
+
 function isListIntro(line) {
   const value = clean(line);
-  if (!value.endsWith(':')) return false;
-  if (value.length < 12 || value.length > 110) return false;
-
+  if (!value.endsWith(':') || value.length < 12 || value.length > 110) return false;
   const lower = value.toLowerCase();
   return [
     /\bpermet(?:tent)? de\s*:/,
@@ -246,13 +256,15 @@ function isListIntro(line) {
 function makeListQuestion(line) {
   const heading = line.replace(/:$/, '').trim();
   const lower = heading.toLowerCase();
-
+  if (/^le lavage des mains permet de$/i.test(heading)) return 'Quels sont les objectifs du lavage des mains ?';
+  if (/^on distingue principalement deux techniques$/i.test(heading)) return 'Quelles sont les deux techniques d’hygiène des mains ?';
+  if (/^l’hygiène des mains doit être réalisée notamment$/i.test(heading) || /^l\'hygiène des mains doit être réalisée notamment$/i.test(heading)) return 'Quand faut-il réaliser une hygiène des mains ?';
   if (/\bpermet(?:tent)? de$/i.test(lower)) {
     const subject = heading.replace(/\bpermet(?:tent)? de$/i, '').trim();
     return `Quels sont les objectifs de ${subject.toLowerCase()} ?`;
   }
+  if (/\bdistingue(?:nt)?$/i.test(lower)) return `Quelles sont les différentes formes de ${heading.replace(/\bdistingue(?:nt)?$/i, '').trim().toLowerCase()} ?`;
   if (/\bcomprend(?:ent)?$/i.test(lower)) return `Que comprend ${heading.replace(/\bcomprend(?:ent)?$/i, '').trim()} ?`;
-  if (/\bdistingue(?:nt)?$/i.test(lower)) return `Quelles sont les différentes formes de ${heading.replace(/\bdistingue(?:nt)?$/i, '').trim()} ?`;
   return `${heading} ?`;
 }
 
@@ -260,13 +272,11 @@ function pickImportant(sentences, headings, bullets, questionGroups) {
   const groupedAnswers = questionGroups.flatMap(group => group.answers);
   const safeHeadings = headings.filter(heading => !isListIntro(`${heading}:`));
   const safeBullets = bullets.filter(item => !isListIntro(item));
-
   const candidates = [...groupedAnswers, ...safeBullets, ...sentences]
     .filter(item => !isListIntro(item))
     .filter(item => !/^cours test\b/i.test(item))
     .filter(item => !/^mots importants\s*:/i.test(item))
     .filter(item => !safeHeadings.includes(item));
-
   const seen = new Set();
   return candidates.filter(item => {
     const normalized = item.toLowerCase().replace(/[.;,!?]/g, '').trim();
