@@ -48,6 +48,7 @@ function generateSheet() {
   const bullets = lines.filter(isBullet).map(stripBullet);
   const definitions = extractDefinitions(lines);
   const headings = lines.filter(isHeading);
+  const questionGroups = extractQuestionGroups(text);
   const important = pickImportant(lines, sentences, headings, bullets);
   const summary = makeSummary(sentences, format);
 
@@ -56,8 +57,13 @@ function generateSheet() {
 
   let html = '';
   if (format === 'qa') {
-    html += section('À retenir', `<ul class="question-list">${makeQuestions(important, sentences).map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>`);
-    html += section('Réponses', `<ul>${important.slice(0, 6).map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`);
+    const qa = questionGroups.length ? questionGroups : makeFallbackQA(important, sentences);
+    html += section('Questions / réponses', qa.map(group => `
+      <div class="definition">
+        <strong>${escapeHtml(group.question)}</strong>
+        <ul>${group.answers.map(answer => `<li>${escapeHtml(answer)}</li>`).join('')}</ul>
+      </div>
+    `).join(''));
   } else if (format === 'definitions') {
     html += section('Notions essentielles', `<ul>${important.slice(0, 8).map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`);
     html += definitions.length ? section('Définitions', definitions.map(([term, def]) => `<div class="definition"><strong>${escapeHtml(term)}</strong> : ${escapeHtml(def)}</div>`).join('')) : section('Définitions', '<p>Aucune définition avec « : » n’a été repérée. Tu peux en ajouter dans ton cours pour les retrouver ici.</p>');
@@ -74,12 +80,12 @@ function generateSheet() {
 }
 
 function clean(value) {
-  return value.replace(/^\s*[-•*▪]\s*/, '').replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim();
+  return value.replace(/^\s*[-•*▪]\s*/, '').replace(/^\s*\d+[.)]\s*/, '').replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim();
 }
 
 function stripBullet(value) { return clean(value); }
-function isBullet(line) { return /^\s*[-•*▪]/.test(line); }
-function isHeading(line) { return line.length <= 80 && (/^#{1,4}\s/.test(line) || (line.endsWith(':') && line.split(' ').length <= 9)); }
+function isBullet(line) { return /^\s*[-•*▪]|^\s*\d+[.)]\s*/.test(line); }
+function isHeading(line) { return line.length <= 80 && (/^#{1,4}\s/.test(line) || (line.endsWith(':') && line.split(' ').length <= 12)); }
 
 function splitSentences(text) {
   return text.replace(/\n/g, ' ').split(/(?<=[.!?])\s+/);
@@ -90,6 +96,58 @@ function extractDefinitions(lines) {
     const index = line.indexOf(':');
     return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
   }).filter(pair => pair[0] && pair[1]);
+}
+
+// Repère une consigne qui se termine par « : » et regroupe toutes les puces qui suivent.
+// Exemple : « Le lavage des mains permet de : » + 5 puces => 1 question + 5 réponses.
+function extractQuestionGroups(text) {
+  const rawLines = text.split(/\n+/).map(line => line.trim()).filter(Boolean);
+  const groups = [];
+  let current = null;
+
+  for (const rawLine of rawLines) {
+    const line = rawLine.replace(/^#+\s*/, '').trim();
+    const bulletMatch = line.match(/^(?:[-•*▪]|\d+[.)])\s+(.+)$/);
+
+    if (bulletMatch && current) {
+      current.answers.push(bulletMatch[1].trim());
+      continue;
+    }
+
+    if (current && current.answers.length) {
+      groups.push(current);
+      current = null;
+    }
+
+    if (line.endsWith(':') && line.length >= 15 && line.split(/\s+/).length <= 16) {
+      current = {
+        question: turnHeadingIntoQuestion(line.slice(0, -1).trim()),
+        answers: []
+      };
+    }
+  }
+
+  if (current && current.answers.length) groups.push(current);
+  return groups.slice(0, 8);
+}
+
+function turnHeadingIntoQuestion(heading) {
+  const lower = heading.charAt(0).toLowerCase() + heading.slice(1);
+
+  if (/\bpermet de$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\bpermettent de$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\bcomprend$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\bdistingue$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\btypes?$/i.test(lower)) return `${heading} quels sont-ils ?`;
+  if (/\bétapes?$/i.test(lower)) return `${heading} quelles sont-elles ?`;
+  return `${heading} ?`;
+}
+
+function makeFallbackQA(items, sentences) {
+  return items.slice(0, 6).map(item => ({
+    question: `Que faut-il retenir à propos de « ${item.split(' ').slice(0, 8).join(' ')}${item.split(' ').length > 8 ? '…' : ''} » ?`,
+    answers: [item]
+  }));
 }
 
 function pickImportant(lines, sentences, headings, bullets) {
