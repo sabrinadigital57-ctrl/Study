@@ -43,13 +43,9 @@ function generateSheet() {
 
   const subject = document.getElementById('subject').value;
   const format = document.getElementById('format').value;
-  const lines = text.split(/\n+/).map(line => clean(line)).filter(Boolean);
-  const sentences = splitSentences(text).map(clean).filter(Boolean);
-  const bullets = lines.filter(isBullet).map(stripBullet);
-  const definitions = extractDefinitions(lines);
-  const headings = lines.filter(isHeading);
-  const questionGroups = extractQuestionGroups(text);
-  const important = pickImportant(lines, sentences, headings, bullets);
+  const structure = parseCourse(text);
+  const { lines, sentences, bullets, definitions, headings, questionGroups } = structure;
+  const important = pickImportant(lines, sentences, headings, bullets, questionGroups);
   const summary = makeSummary(sentences, format);
 
   resultTitle.textContent = `Fiche — ${headings[0] || subject}`;
@@ -79,67 +75,123 @@ function generateSheet() {
   resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// Analyse le cours en plusieurs blocs pour conserver la relation « consigne → liste de réponses ».
+function parseCourse(text) {
+  const rawLines = text.split(/\r?\n/);
+  const lines = rawLines.map(clean).filter(Boolean);
+  const sentences = splitSentences(text).map(clean).filter(Boolean);
+  const bullets = lines.filter(isBullet).map(stripBullet);
+  const definitions = extractDefinitions(lines);
+  const headings = lines.filter(isHeading);
+  const questionGroups = extractQuestionGroups(rawLines);
+  return { lines, sentences, bullets, definitions, headings, questionGroups };
+}
+
 function clean(value) {
-  return value.replace(/^\s*[-•*▪]\s*/, '').replace(/^\s*\d+[.)]\s*/, '').replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim();
+  return value
+    .replace(/^\s*[-•*▪]\s*/, '')
+    .replace(/^\s*\d+[.)]\s*/, '')
+    .replace(/^\s*#+\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function stripBullet(value) { return clean(value); }
-function isBullet(line) { return /^\s*[-•*▪]|^\s*\d+[.)]\s*/.test(line); }
-function isHeading(line) { return line.length <= 80 && (/^#{1,4}\s/.test(line) || (line.endsWith(':') && line.split(' ').length <= 12)); }
+function isBullet(line) { return /^\s*(?:[-•*▪]|\d+[.)])\s+/.test(line); }
+function isHeading(line) {
+  return line.length <= 90 && (/^#{1,4}\s/.test(line) || (line.endsWith(':') && line.split(/\s+/).length <= 14));
+}
 
 function splitSentences(text) {
   return text.replace(/\n/g, ' ').split(/(?<=[.!?])\s+/);
 }
 
 function extractDefinitions(lines) {
-  return lines.filter(line => line.includes(':')).slice(0, 10).map(line => {
+  return lines.filter(line => line.includes(':') && !isListIntro(line)).slice(0, 10).map(line => {
     const index = line.indexOf(':');
     return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
   }).filter(pair => pair[0] && pair[1]);
 }
 
-// Repère une consigne qui se termine par « : » et regroupe toutes les puces qui suivent.
-// Exemple : « Le lavage des mains permet de : » + 5 puces => 1 question + 5 réponses.
-function extractQuestionGroups(text) {
-  const rawLines = text.split(/\n+/).map(line => line.trim()).filter(Boolean);
+// Détecte les structures du type :
+// « Le lavage des mains permet de : »
+// - réponse 1
+// - réponse 2
+// - réponse 3
+// Même si une ligne vide ou un sous-titre apparaît entre deux blocs.
+function extractQuestionGroups(rawLines) {
   const groups = [];
   let current = null;
 
-  for (const rawLine of rawLines) {
-    const line = rawLine.replace(/^#+\s*/, '').trim();
-    const bulletMatch = line.match(/^(?:[-•*▪]|\d+[.)])\s+(.+)$/);
+  for (let i = 0; i < rawLines.length; i++) {
+    const raw = rawLines[i];
+    const line = raw.replace(/^\s*#+\s*/, '').trim();
+    if (!line) continue;
 
-    if (bulletMatch && current) {
-      current.answers.push(bulletMatch[1].trim());
+    const bulletMatch = line.match(/^(?:[-•*▪]|\d+[.)])\s+(.+)$/);
+    if (bulletMatch) {
+      if (current) current.answers.push(clean(bulletMatch[1]));
       continue;
     }
 
+    // Si on arrive à une nouvelle ligne de texte, le groupe précédent est terminé.
     if (current && current.answers.length) {
       groups.push(current);
       current = null;
     }
 
-    if (line.endsWith(':') && line.length >= 15 && line.split(/\s+/).length <= 16) {
+    if (isListIntro(line)) {
       current = {
-        question: turnHeadingIntoQuestion(line.slice(0, -1).trim()),
+        question: makeListQuestion(line),
         answers: []
       };
     }
   }
 
   if (current && current.answers.length) groups.push(current);
-  return groups.slice(0, 8);
+
+  return groups
+    .filter(group => group.answers.length > 0)
+    .map(group => ({
+      question: group.question,
+      answers: unique(group.answers)
+    }))
+    .filter(group => group.answers.length > 0)
+    .slice(0, 12);
 }
 
-function turnHeadingIntoQuestion(heading) {
-  const lower = heading.charAt(0).toLowerCase() + heading.slice(1);
+function isListIntro(line) {
+  const value = line.replace(/\s+/g, ' ').trim();
+  if (!value.endsWith(':')) return false;
+  if (value.length < 12 || value.length > 110) return false;
+  if (value.split(/\s+/).length > 18) return false;
 
-  if (/\bpermet de$/i.test(lower)) return `${heading} quoi ?`;
-  if (/\bpermettent de$/i.test(lower)) return `${heading} quoi ?`;
-  if (/\bcomprend$/i.test(lower)) return `${heading} quoi ?`;
-  if (/\bdistingue$/i.test(lower)) return `${heading} quoi ?`;
-  if (/\btypes?$/i.test(lower)) return `${heading} quels sont-ils ?`;
-  if (/\bétapes?$/i.test(lower)) return `${heading} quelles sont-elles ?`;
+  const lower = value.toLowerCase();
+  const patterns = [
+    /\bpermet(?:tent)? de\s*:/,
+    /\bcomprend(?:ent)?\s*:/,
+    /\bdistingue(?:nt)?\s*:/,
+    /\b(?:voici|on retrouve|on distingue|il existe)\s*:/,
+    /\b(?:types?|étapes?|raisons?|objectifs?|moyens?|règles?|critères?|signes?|exemples?|causes?|conséquences?|indications?|contre-indications?)\s*:/
+  ];
+
+  return patterns.some(pattern => pattern.test(lower));
+}
+
+function makeListQuestion(line) {
+  const heading = line.replace(/:$/, '').trim();
+  const lower = heading.toLowerCase();
+
+  if (/\bpermet(?:tent)? de$/i.test(lower)) {
+    return `Pourquoi ${heading.charAt(0).toLowerCase()}${heading.slice(1).replace(/\bpermet(?:tent)? de$/i, '').trim()} ?`.replace(/\?$/, '?');
+  }
+
+  if (/\bcomprend(?:ent)?$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\bdistingue(?:nt)?$/i.test(lower)) return `${heading} quoi ?`;
+  if (/\b(?:types?|étapes?|raisons?|objectifs?|moyens?|règles?|critères?|signes?|exemples?|causes?|conséquences?|indications?|contre-indications?)$/i.test(lower)) {
+    return `${heading} ?`;
+  }
+
   return `${heading} ?`;
 }
 
@@ -150,15 +202,23 @@ function makeFallbackQA(items, sentences) {
   }));
 }
 
-function pickImportant(lines, sentences, headings, bullets) {
-  const candidates = [...bullets, ...headings.map(h => h.replace(/:$/, '')), ...sentences];
+function pickImportant(lines, sentences, headings, bullets, questionGroups) {
+  // Les réponses de listes passent en priorité : elles contiennent souvent les notions
+  // que l'utilisateur doit réellement mémoriser.
+  const groupedAnswers = questionGroups.flatMap(group => group.answers);
+  const candidates = [...groupedAnswers, ...bullets, ...headings.map(h => h.replace(/:$/, '')), ...sentences];
   const seen = new Set();
+
   return candidates.filter(item => {
-    const key = item.toLowerCase();
-    if (seen.has(key) || item.length < 18) return false;
-    seen.add(key);
+    const normalized = item.toLowerCase().replace(/[.;,!?]/g, '').trim();
+    if (seen.has(normalized) || item.length < 18) return false;
+    seen.add(normalized);
     return true;
-  }).slice(0, 12);
+  }).slice(0, 16);
+}
+
+function unique(items) {
+  return [...new Set(items.map(item => item.trim()).filter(Boolean))];
 }
 
 function makeSummary(sentences, format) {
