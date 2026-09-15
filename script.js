@@ -245,10 +245,11 @@ function isListIntro(line) {
   if (!value.endsWith(':') || value.length < 12 || value.length > 110) return false;
   const lower = value.toLowerCase();
   return [
-    /\bpermet(?:tent)? de\s*:/,
-    /\bcomprend(?:ent)?\s*:/,
-    /\bdistingue(?:nt)?\s*:/,
-    /\b(?:voici|on retrouve|on distingue|il existe)\s*:/,
+    /\bpermet(?:tent)? de\b.*:\s*$/,
+    /\bcomprend(?:ent)?\b.*:\s*$/,
+    /\bdistingue(?:nt)?\b.*:\s*$/,
+    /\b(?:voici|on retrouve|on distingue|il existe)\b.*:\s*$/,
+    /\b(?:doit|doivent)\s+être\s+réalis[ée]e?s?\s+notamment\s*:\s*$/,
     /\b(?:types?|étapes?|raisons?|objectifs?|moyens?|règles?|critères?|signes?|exemples?|causes?|conséquences?|indications?|contre-indications?)\s*:/
   ].some(pattern => pattern.test(lower));
 }
@@ -320,15 +321,14 @@ function makeQuestions(items) {
   });
 }
 
-function section(title, body) {
-  return `<div class="result-section"><h3>${title}</h3>${body}</div>`;
+function section(title, content) {
+  return `<section class="result-section"><h3>${escapeHtml(title)}</h3>${content}</section>`;
 }
 
 function escapeHtml(value) {
-  return value.replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;' }[char]));
+  return value.replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 }
 
 function buildPlainText() {
-  const clone = resultContent.cloneNode(true);
-  return `${resultTitle.textContent}\n${clone.innerText}`;
+  return resultContent.innerText.trim();
 }
