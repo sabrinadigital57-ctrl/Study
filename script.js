@@ -75,15 +75,15 @@ function generateSheet() {
   resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// Analyse le cours en conservant les titres, les listes et surtout la relation « consigne → réponses ».
 function parseCourse(text) {
   const rawLines = text.split(/\r?\n/);
   const lines = rawLines.map(clean).filter(Boolean);
-  const sentences = extractSentences(rawLines);
   const bullets = rawLines.filter(isBullet).map(line => clean(line.replace(/^\s*(?:[-•*▪]|\d+[.)])\s+/, ''))).filter(Boolean);
-  const definitions = extractDefinitions(lines);
-  const headings = extractHeadings(rawLines);
-  const questionGroups = extractQuestionGroups(rawLines);
+  const normalizedLines = expandInlineHeadings(rawLines);
+  const sentences = extractSentences(normalizedLines);
+  const definitions = extractDefinitions(normalizedLines.map(clean).filter(Boolean));
+  const headings = extractHeadings(normalizedLines);
+  const questionGroups = extractQuestionGroups(normalizedLines);
   return { lines, sentences, bullets, definitions, headings, questionGroups };
 }
 
@@ -104,13 +104,39 @@ function isBullet(line) {
   return /^\s*(?:[-•*▪]|\d+[.)])\s+/.test(line);
 }
 
+// Certains collages depuis Word/Canva/PDF suppriment les retours à la ligne.
+// On remet alors sur des lignes séparées les titres du type « 1. Définition ».
+function expandInlineHeadings(rawLines) {
+  const result = [];
+  for (const raw of rawLines) {
+    const line = raw.trim();
+    if (!line) {
+      result.push('');
+      continue;
+    }
+
+    const matches = [...line.matchAll(/(?:^|\s)(\d+[.)]\s+[A-ZÀ-ÖØ-Ý][^.!?\n]{1,70}?)(?=\s+(?:\d+[.)]\s+|[A-ZÀ-ÖØ-Ý][^.!?]{0,45}\s*:|\*\*))/g)];
+    if (matches.length) {
+      let current = line;
+      const parts = current.split(/(?=\d+[.)]\s+[A-ZÀ-ÖØ-Ý])/g).map(part => part.trim()).filter(Boolean);
+      if (parts.length > 1) {
+        result.push(...parts);
+        continue;
+      }
+    }
+
+    result.push(line);
+  }
+  return result;
+}
+
 function extractHeadings(rawLines) {
   return rawLines.map(line => {
     const trimmed = line.trim();
     const withoutMarkdown = trimmed.replace(/^\s*#{1,4}\s*/, '').replace(/^\s*\*\*(.*?)\*\*\s*$/, '$1');
     const withoutNumber = withoutMarkdown.replace(/^\s*\d+[.)]\s*/, '').trim();
     return { raw: trimmed, value: withoutNumber };
-  }).filter(item => isHeading(item.raw, item.value)).map(item => item.value);
+  }).filter(item => isHeading(item.raw, item.value)).map(item => item.value.replace(/:$/, '').trim());
 }
 
 function isHeading(rawLine, cleanedLine = clean(rawLine)) {
@@ -118,7 +144,7 @@ function isHeading(rawLine, cleanedLine = clean(rawLine)) {
   const markdownHeading = /^#{1,4}\s/.test(raw);
   const numberedHeading = /^\d+[.)]\s+/.test(raw) && !isBullet(raw);
   const boldHeading = /^\*\*[^*]+\*\*$/.test(raw);
-  const colonHeading = cleanedLine.endsWith(':') && cleanedLine.split(/\s+/).length <= 14;
+  const colonHeading = cleanedLine.endsWith(':') && cleanedLine.split(/\s+/).length <= 14 && !isListIntro(cleanedLine);
   const questionHeading = cleanedLine.endsWith('?') && cleanedLine.split(/\s+/).length <= 12;
   return markdownHeading || numberedHeading || boldHeading || colonHeading || questionHeading;
 }
@@ -133,7 +159,7 @@ function extractSentences(rawLines) {
   return contentLines
     .flatMap(line => line.replace(/\*\*/g, '').split(/(?<=[.!?])\s+/))
     .map(clean)
-    .filter(sentence => sentence.length > 25);
+    .filter(sentence => sentence.length > 25 && !isListIntro(sentence));
 }
 
 function extractDefinitions(lines) {
@@ -143,11 +169,6 @@ function extractDefinitions(lines) {
   }).filter(pair => pair[0] && pair[1]);
 }
 
-// Détecte les structures du type :
-// « Le lavage des mains permet de : »
-// - réponse 1
-// - réponse 2
-// - réponse 3
 function extractQuestionGroups(rawLines) {
   const groups = [];
   let current = null;
@@ -211,13 +232,9 @@ function makeListQuestion(line) {
     const subject = heading.replace(/\bpermet(?:tent)? de$/i, '').trim();
     return `Quels sont les objectifs de ${subject.toLowerCase()} ?`;
   }
-
   if (/\bcomprend(?:ent)?$/i.test(lower)) return `Que comprend ${heading.replace(/\bcomprend(?:ent)?$/i, '').trim()} ?`;
-  if (/\bdistingue(?:nt)?$/i.test(lower)) return `Quelles sont les différentes formes de ${heading.replace(/\bdistingue(?:nt)?$/i, '').trim()} ?`;
-  if (/\b(?:types?|étapes?|raisons?|objectifs?|moyens?|règles?|critères?|signes?|exemples?|causes?|conséquences?|indications?|contre-indications?)$/i.test(lower)) {
-    return `${heading} ?`;
-  }
-
+  if (/\bdistingue(?:nt)?$/i.test(lower)) return `Quelles sont les différentes formes de ${heading.replace(/\bdis(?:tingue|tinguent)$/i, '').trim()} ?`;
+  if (/\b(?:types?|étapes?|raisons?|objectifs?|moyens?|règles?|critères?|signes?|exemples?|causes?|conséquences?|indications?|contre-indications?)$/i.test(lower)) return `${heading} ?`;
   return `${heading} ?`;
 }
 
@@ -230,7 +247,11 @@ function makeFallbackQA(items, sentences) {
 
 function pickImportant(lines, sentences, headings, bullets, questionGroups) {
   const groupedAnswers = questionGroups.flatMap(group => group.answers);
-  const candidates = [...groupedAnswers, ...bullets, ...headings.map(h => h.replace(/:$/, '')), ...sentences];
+  const cleanHeadings = headings.filter(heading => !isListIntro(`${heading}:`));
+  const safeBullets = bullets.filter(item => !isListIntro(item));
+  const candidates = [...groupedAnswers, ...safeBullets, ...cleanHeadings, ...sentences]
+    .filter(item => !isListIntro(item))
+    .filter(item => !/^cours test\b/i.test(item));
   const seen = new Set();
 
   return candidates.filter(item => {
@@ -247,7 +268,7 @@ function unique(items) {
 
 function makeSummary(sentences, format) {
   const limit = format === 'short' ? 2 : 4;
-  const selected = sentences.filter(s => s.length > 25).slice(0, limit);
+  const selected = sentences.filter(s => s.length > 25 && !/^cours test\b/i.test(s)).slice(0, limit);
   return selected.length ? selected.join(' ') : 'Relis les notions ci-dessous : elles constituent les éléments principaux repérés dans ton cours.';
 }
 
