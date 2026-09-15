@@ -86,12 +86,12 @@ function parseCourse(text) {
 }
 
 // Les copier-coller depuis Word, Canva ou PDF peuvent supprimer les retours à la ligne.
-// On reconstruit donc une structure minimale à partir des titres en gras/numérotés
-// et des listes séparées par des « ; ».
+// On reconstruit donc une structure minimale à partir des titres en gras/numérotés,
+// des puces et des listes séparées par des « ; ».
 function normalizeCourse(text) {
   let value = text.replace(/\r/g, '');
 
-  // Un titre Markdown en gras devient toujours une ligne autonome.
+  // Un titre Markdown en gras devient une ligne autonome.
   value = value.replace(/\*\*\s*([^*\n]+?)\s*\*\*/g, '\n@@BOLD@@$1@@END@@\n');
 
   // Titres numérotés collés au texte : 1. Titre, 2. Titre, etc.
@@ -103,11 +103,14 @@ function normalizeCourse(text) {
   // Les listes « - ... ; - ... » deviennent de vraies lignes.
   value = value.replace(/\s+(?=[-•▪]\s+)/g, '\n');
 
+  // Certains copier-coller suppriment aussi les puces. On sépare alors
+  // les éléments d’une liste quand ils sont clairement séparés par « ; ».
+  value = value.replace(/;\s+(?=[a-zà-ÿ])/g, ';\n');
+
   return value
     .split(/\n+/)
     .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => line.replace(/^@@BOLD@@/, '').replace(/@@END@@$/, '').trim());
+    .filter(Boolean);
 }
 
 function clean(value) {
@@ -133,8 +136,7 @@ function extractBullets(lines) {
   return lines
     .filter(isBullet)
     .map(line => clean(line))
-    .filter(Boolean)
-    .filter(item => !isHeading(item));
+    .filter(Boolean);
 }
 
 function extractHeadings(lines) {
@@ -176,14 +178,19 @@ function extractDefinitions(lines) {
   const definitions = [];
 
   for (const line of lines) {
-    if (isBullet(line) || isHeading(line)) continue;
     const value = clean(line);
-    if (!value.includes(':') || isListIntro(value)) continue;
+    if (!value.includes(':')) continue;
+    if (/^mots importants\s*:/i.test(value)) continue;
 
     const index = value.indexOf(':');
     const term = value.slice(0, index).trim();
     const def = value.slice(index + 1).trim();
-    if (term && def && term.split(/\s+/).length <= 10) definitions.push([term, def]);
+    if (!term || !def || term.split(/\s+/).length > 10) continue;
+    if (isListIntro(value) || /^cours test\b/i.test(term)) continue;
+
+    // Une vraie définition peut être dans une puce : « - Le lavage simple : ... ».
+    // On la garde, mais on ignore les phrases de liste comme « objectifs : ... ».
+    definitions.push([term, def]);
   }
 
   return uniquePairs(definitions).slice(0, 10);
